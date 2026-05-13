@@ -926,6 +926,7 @@ select.input{appearance:auto;cursor:pointer;}
       <span id="returnPickupProgressLabel">0 / 0 linhas confirmadas</span>
       <span id="returnPickupDiffLabel" style="color:#dc2626;display:none;"></span>
     </div>
+    <div class="presence-bar" id="presence-returnpickup"></div>
     <div class="table-scroll"><table class="tbl" id="returnPickupTable" data-resizable-cols>
       <thead id="returnPickupThead"></thead>
       <tbody id="returnPickupLines"></tbody>
@@ -1452,6 +1453,7 @@ function productLineLabel(sku) {
 function showPage(id,btn){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.mob-nav-btn').forEach(t=>t.classList.remove('active'));
   document.getElementById('page-'+id).classList.add('active');
   if(btn) btn.classList.add('active');
   if(id==='skudb') renderSkuDb();
@@ -1648,6 +1650,17 @@ function dlSkuTpl(){
 
 // ══ STOCK TABLE ══
 // ══ STOCK METRICS ══
+function aggregateGuideLines(lines) {
+  const map = {};
+  (lines || []).forEach(l => {
+    const sku = resolveSku(l.sku);
+    const qty = parseInt(l.qty)||0;
+    if (!sku || qty <= 0) return;
+    map[sku] = (map[sku] || 0) + qty;
+  });
+  return Object.entries(map).map(([sku, qty]) => ({sku, qty}));
+}
+
 function calcStockMetrics() {
   // Returns {sku: {carteira, emPrep, faturado, devPedidas, devPrep, devFeitas}}
   const m = {};
@@ -1655,7 +1668,10 @@ function calcStockMetrics() {
 
   // ORDERS
   orders.forEach(o => {
-    o.lines.forEach(l => {
+    const orderLines = (['picked','parcial'].includes(o.status) && o.guide?.lines?.length)
+      ? aggregateGuideLines(o.guide.lines.filter(g => g.status === 'confirmed').map(g => ({sku:g.sku, qty:g.qtyDone || g.qty})))
+      : (o.lines || []);
+    orderLines.forEach(l => {
       ensure(l.sku);
       if (o.status === 'open')                          m[l.sku].carteira  += l.qty;
       if (o.status === 'guia-emitida')                  m[l.sku].emPrep    += l.qty;
@@ -1665,17 +1681,18 @@ function calcStockMetrics() {
 
   // RETURNS (devoluções)
   rets.forEach(r => {
-    r.lines.forEach(l => {
+    (r.lines || []).forEach(l => {
       ensure(l.sku);
       if (r.status === 'open')                                    m[l.sku].devPedidas += l.qty;
       if (['guia-emitida','em-colocacao'].includes(r.status))     m[l.sku].devPrep    += l.qty;
-      if (r.status === 'returned') {
-        // Sum actually confirmed quantities from guide
-        const confirmed = r.putawayGuide?.lines?.filter(g=>g.status==='confirmed') || [];
-        const qty = confirmed.length ? confirmed.reduce((a,g)=>a+g.qtyDone,0) : l.qty;
-        m[l.sku].devFeitas += qty;
-      }
     });
+    if (r.status === 'returned') {
+      const confirmed = r.putawayGuide?.lines?.filter(g=>g.status==='confirmed') || [];
+      const doneLines = confirmed.length
+        ? aggregateGuideLines(confirmed.map(g => ({sku:g.sku, qty:g.qtyDone || g.qty})))
+        : (r.lines || []);
+      doneLines.forEach(l => { ensure(l.sku); m[l.sku].devFeitas += parseInt(l.qty)||0; });
+    }
   });
 
   return m;
@@ -1683,7 +1700,7 @@ function calcStockMetrics() {
 
 function calcDisponivel(sku, realQty, metrics) {
   const m = metrics[sku] || {};
-  return realQty - (m.carteira||0) - (m.emPrep||0) + (m.devFeitas||0);
+  return realQty - (m.carteira||0) - (m.emPrep||0);
 }
 
 function initialStockQty(s) {
@@ -1702,6 +1719,9 @@ function sameProductCode(a, b) {
 function stockRowsForSku(sku) {
   const resolved = resolveSku(sku);
   return stock.filter(s => sameProductCode(s.sku, resolved));
+}
+function stockTotalForSku(sku) {
+  return stockRowsForSku(sku).reduce((a,s)=>a+(parseInt(s.qty)||0),0);
 }
 function canonicalLineSku(value) {
   const resolved = resolveSku(value);
@@ -1964,7 +1984,7 @@ function exportTeoricoExcel(){
   const rows=[['SKU','Nome','Marca','ML','Qty teórica','Stock real','Diferença','Estado']];
   teoricoRaw.forEach(t=>{
     const info=skuInfo(t.sku);
-    const real=stock.filter(s=>s.sku===t.sku).reduce((a,s)=>a+s.qty,0);
+    const real=stockTotalForSku(t.sku);
     const diff=real-t.qty;
     const estado=diff===0?'Conforme':diff>0?'Excesso':real===0?'Não recebido':'Em falta';
     rows.push([t.sku,info?.name||'',info?.brand||'',info?.ml||'',t.qty,real,diff,estado]);
@@ -2087,7 +2107,7 @@ function entAcSearch(){
   const res=skuDb.filter(d=>productMatches(d,q) && (entAction!=='out' || entSkuHasStock(d.sku))).slice(0,12);
   if(!res.length){lst.classList.remove('open');return;}
   lst.innerHTML=res.map((d,i)=>{
-    const available=stock.filter(s=>s.sku===d.sku).reduce((a,s)=>a+(parseInt(s.qty)||0),0);
+    const available=stockTotalForSku(d.sku);
     return `<div class="ac-item" data-sku="${d.sku}" data-idx="${i}" onmousedown="acPick('ent-search','ent-ac','${d.sku}')">
       <div class="ac-sku">${d.sku}${d.ean?` <span style="color:var(--muted);font-weight:400">· ${d.ean}</span>`:''}${entAction==='out'?` <span style="color:var(--success);font-weight:700">· ${available} disp.</span>`:''}</div>
       <div class="ac-name">${d.name||'—'}</div>
@@ -2142,7 +2162,7 @@ function refreshEntPositionsForSku(){
   if(!sel)return;
   let positions;
   if(entAction==='out' && entSku){
-    positions=[...new Set(stock.filter(s=>s.sku===entSku && (parseInt(s.qty)||0)>0).map(s=>s.position))];
+    positions=[...new Set(stock.filter(s=>sameProductCode(s.sku, entSku) && (parseInt(s.qty)||0)>0).map(s=>s.position))];
   } else {
     positions=[...new Set([...warehousePositions(), ...stock.map(s=>s.position)])];
   }
@@ -2154,7 +2174,7 @@ function refreshEntPositionsForSku(){
   });
   sel.innerHTML='<option value="">— Selecionar da lista —</option>'+
     positions.map(p=>{
-      const total=stock.filter(s=>s.position===p && (entAction!=='out'||s.sku===entSku)).reduce((a,s)=>a+(parseInt(s.qty)||0),0);
+      const total=stock.filter(s=>s.position===p && (entAction!=='out'||sameProductCode(s.sku, entSku))).reduce((a,s)=>a+(parseInt(s.qty)||0),0);
       return `<option value="${p}">${p} (${total} unid.)</option>`;
     }).join('');
   renderEntPosList(positions);
@@ -2188,7 +2208,7 @@ function entUpdatePosWarning(){
   if(!pos){warn.style.display='none';info.textContent='';if(boxWrap)boxWrap.style.display='';return;}
   if(entAction==='out'){
     if(boxWrap)boxWrap.style.display='none';
-    const same=stock.find(s=>s.sku===entSku&&s.position===pos);
+    const same=stock.find(s=>sameProductCode(s.sku, entSku)&&s.position===pos);
     if(!same){
       warn.style.display='flex';
       warn.textContent='⚠️ Este SKU não tem stock nesta posição.';
@@ -2200,8 +2220,8 @@ function entUpdatePosWarning(){
     info.textContent='Disponível nesta posição: '+same.qty+' unid.';
     return;
   }
-  const existing=stock.filter(s=>s.sku===entSku&&s.position===pos);
-  const otherSkus=stock.filter(s=>s.sku!==entSku&&s.position===pos);
+  const existing=stock.filter(s=>sameProductCode(s.sku, entSku)&&s.position===pos);
+  const otherSkus=stock.filter(s=>!sameProductCode(s.sku, entSku)&&s.position===pos);
   if(boxWrap)boxWrap.style.display=otherSkus.length?'none':'';
   if(existing.length){
     warn.style.display='flex';
@@ -2216,12 +2236,10 @@ function entConfirm(){
   if(!pos){toast('Indica a posição','err');return;}
   if(!entSku){toast('Sem produto selecionado','err');return;}
   if(entAction==='out'){
-    const same=stock.find(s=>s.sku===entSku&&s.position===pos);
+    const same=stock.find(s=>sameProductCode(s.sku, entSku)&&s.position===pos);
     if(!same){toast('Este SKU não tem stock nessa posição','err');return;}
     if((parseInt(same.qty)||0)<entQty){toast('Stock insuficiente nessa posição','err');return;}
-    const initialBefore=initialStockQty(same);
     same.qty=(parseInt(same.qty)||0)-entQty;
-    same.initialTheoretical=Math.max(0, initialBefore-entQty);
     saveStk();renderStock();
     logAction('Saída manual de stock',entSku+' qty:'+entQty+' pos:'+pos);
     const info=skuInfo(entSku);
@@ -2245,12 +2263,11 @@ function entConfirm(){
       '\n\nQueres adicionar '+entQty+' unid. de '+entSku+' nesta posição?';
     if(!confirm(msg)) return;
   }
-  const same=stock.find(s=>s.sku===entSku&&s.position===pos);
-  const hasDifferentSku=posEntries.some(s=>s.sku!==entSku);
+  const same=stock.find(s=>sameProductCode(s.sku, entSku)&&s.position===pos);
+  const hasDifferentSku=posEntries.some(s=>!sameProductCode(s.sku, entSku));
   if(same){
     if (same.initialTheoretical === undefined) same.initialTheoretical = initialStockQty(same);
     same.qty += entQty;
-    same.initialTheoretical += entQty;
     if(hasDifferentSku) same.boxType='mista';
   } else {
     const boxType=posEntries.length?'mista':entBoxType;
@@ -2298,18 +2315,16 @@ function importStock(){
       const bt=normBoxType(row[3]);
       if(!sku||!pos)return;
       if(entAction==='out'){
-        const prev=stock.find(s=>s.sku===sku&&s.position===pos);
+        const prev=stock.find(s=>sameProductCode(s.sku, sku)&&s.position===pos);
         if(!prev || (parseInt(prev.qty)||0)<qty)return;
-        const initialBefore=initialStockQty(prev);
         prev.qty=(parseInt(prev.qty)||0)-qty;
-        prev.initialTheoretical=Math.max(0, initialBefore-qty);
         added++;
         return;
       }
-      const prev=stock.find(s=>s.sku===sku&&s.position===pos);
+      const prev=stock.find(s=>sameProductCode(s.sku, sku)&&s.position===pos);
       if(prev){
+        if (prev.initialTheoretical === undefined) prev.initialTheoretical = initialStockQty(prev);
         prev.qty=(parseInt(prev.qty)||0)+qty;
-        prev.initialTheoretical=initialStockQty(prev)+qty;
         prev.boxType=bt;
       } else {
         stock.push({id:Date.now()+Math.random(),sku,position:pos,qty,boxType:bt,initialTheoretical:qty});
@@ -2593,7 +2608,7 @@ function exportDocExcel(t,id){
   const rows=[[title],['Estado: '+(doc.status||'—')+' · Criado por: '+(doc.createdBy||'—')+' · '+(doc.createdAt||'—')],[],['EAN','SKU','Nome','Marca','ML','Quantidade','Stock real']];
   doc.lines.forEach(l=>{
     const i=skuInfo(l.sku);
-    const real=stock.filter(s=>s.sku===l.sku).reduce((a,s)=>a+s.qty,0);
+    const real=stockTotalForSku(l.sku);
     rows.push([i?.ean||'',l.sku,i?.name||'',i?.brand||'',i?.ml||'',l.qty,real]);
   });
   const ws=XLSX.utils.aoa_to_sheet(rows);
@@ -2676,7 +2691,7 @@ function renderDocLines(t){
   if(!doc.lines.length){body.innerHTML=`<tr><td colspan="5"><div class="empty" style="padding:12px;">Sem linhas.</div></td></tr>`;enableResizableTables();return;}
   body.innerHTML=doc.lines.map(l=>{
     const info=skuInfo(l.sku);
-    const av=stock.filter(s=>s.sku===l.sku).reduce((a,s)=>a+s.qty,0);
+    const av=stockTotalForSku(l.sku);
     const ab=t==='order'?(av===0?`<span class="badge bdg-rd">0</span>`:av<l.qty?`<span class="badge bdg-or">${av}</span>`:`<span class="badge bdg-gn">${av}</span>`):`<span class="badge bdg-bl">${av}</span>`;
     return `<tr><td class="mono" style="color:var(--muted)">${info?.ean||'—'}</td><td class="mono" style="font-weight:700">${l.sku}</td>
       <td><input class="input qty-in" type="number" min="1" value="${l.qty}" onchange="updDocQty('${t}','${l.sku}',this.value)"></td>
@@ -2840,6 +2855,18 @@ function sortPickLines(lines) {
     return compareWarehousePosition(a, b);
   });
 }
+function reservedStockById(excludeOrderId) {
+  const reserved = {};
+  orders.forEach(o => {
+    if (o.id === excludeOrderId) return;
+    if (!['guia-emitida','em-preparacao'].includes(o.status) || !o.guide?.lines) return;
+    o.guide.lines.forEach(l => {
+      if (!l.stockId || l.ruptura || l.status === 'ruptura') return;
+      reserved[l.stockId] = (reserved[l.stockId] || 0) + (parseInt(l.qty)||0);
+    });
+  });
+  return reserved;
+}
 function parsePos(pos) {
   // e.g. A11 → shelf=A, shelf level=1, slot=1 | B34 → shelf=B, level=3, slot=4
   const m = String(pos).match(/^([A-Za-z]+)([1-9])([1-9])$/);
@@ -2853,11 +2880,22 @@ function emitirGuia() {
   if (!doc || !doc.lines.length) { toast('Sem linhas na encomenda', 'err'); return; }
 
   const pl = [], warns = [], rupturas = [];
+  const reserved = reservedStockById(doc.id);
+  const planned = {};
 
   doc.lines.forEach(line => {
+    const originalSku = line.sku;
+    const sku = canonicalLineSku(line.sku);
+    if (sku !== originalSku) {
+      line.sku = sku;
+      deleteDocLine('order', doc.id, originalSku);
+      saveDocLine('order', doc.id, sku, line.qty);
+    }
     let rem = line.qty;
     // Priority: caixas mistas first, then exclusivas; within each group sort by position
-    const positions = stock.filter(s => s.sku === line.sku && s.qty > 0)
+    const positions = stockRowsForSku(sku)
+      .map(s => ({...s, _available: Math.max(0, (parseInt(s.qty)||0) - (reserved[s.id]||0) - (planned[s.id]||0))}))
+      .filter(s => s._available > 0)
       .sort((a, b) => {
         const bp = boxPriority(a.boxType) - boxPriority(b.boxType);
         if (bp) return bp;
@@ -2865,19 +2903,20 @@ function emitirGuia() {
       });
 
     if (!positions.length) {
-      rupturas.push(`${line.sku}: sem stock`);
-      pl.push({sku: line.sku, position: '---', qty: line.qty, qtyDone: 0, stockId: null, boxType: 'mista', ruptura: true, status: 'pending'});
+      rupturas.push(`${sku}: sem stock`);
+      pl.push({sku, position: '---', qty: line.qty, qtyDone: 0, stockId: null, boxType: 'mista', ruptura: true, status: 'pending'});
       return;
     }
     positions.forEach(pos => {
       if (rem <= 0) return;
-      const take = Math.min(rem, pos.qty);
-      pl.push({sku: line.sku, position: pos.position, qty: take, qtyDone: take, stockId: pos.id, boxType: normBoxType(pos.boxType), ruptura: false, status: 'pending'});
+      const take = Math.min(rem, parseInt(pos._available)||0);
+      pl.push({sku, position: pos.position, qty: take, qtyDone: take, stockId: pos.id, boxType: normBoxType(pos.boxType), ruptura: false, status: 'pending'});
+      planned[pos.id] = (planned[pos.id]||0) + take;
       rem -= take;
     });
     if (rem > 0) {
-      rupturas.push(`${line.sku}: faltam ${rem} unid.`);
-      pl.push({sku: line.sku, position: '---', qty: rem, qtyDone: 0, stockId: null, boxType: 'mista', ruptura: true, status: 'pending'});
+      rupturas.push(`${sku}: faltam ${rem} unid.`);
+      pl.push({sku, position: '---', qty: rem, qtyDone: 0, stockId: null, boxType: 'mista', ruptura: true, status: 'pending'});
     }
   });
 
@@ -3129,7 +3168,16 @@ function finalizePicking() {
   if (!doc) return;
   const confirmed = prepLines.filter(l => l.status === 'confirmed');
   const rupturas = prepLines.filter(l => l.status === 'ruptura' || l.ruptura);
+  const pending = prepLines.filter(l => l.status === 'pending' && !l.ruptura);
   if (!confirmed.length) { toast('Confirma pelo menos uma linha', 'err'); return; }
+  if (pending.length) { toast('Confirma ou marca rutura em todas as linhas antes de finalizar', 'err'); return; }
+  for (const l of confirmed) {
+    const entry = stock.find(s => s.id === l.stockId);
+    if (entry && (parseInt(entry.qty)||0) < (parseInt(l.qtyDone)||0)) {
+      toast('Stock insuficiente em '+entry.position+' para '+l.sku+'. Reemite a guia ou marca rutura.', 'err');
+      return;
+    }
+  }
   const msg = 'Finalizar picking de ' + doc.id + '?\n\n\u2713 ' + confirmed.length + ' linhas confirmadas\n' + (rupturas.length ? '\u26a0\ufe0f ' + rupturas.length + ' rupturas (n\u00e3o deduzidas)\n' : '') + '\nO stock ser\u00e1 deduzido agora.';
   if (!confirm(msg)) return;
 
@@ -3137,7 +3185,7 @@ function finalizePicking() {
   doc.snapshot = JSON.parse(JSON.stringify(stock));
   confirmed.forEach(l => {
     const entry = stock.find(s => s.id === l.stockId);
-    if (entry) entry.qty = Math.max(0, entry.qty - l.qtyDone);
+    if (entry) entry.qty = entry.qty - l.qtyDone;
   });
 
   doc.status = rupturas.length ? 'parcial' : 'picked';
@@ -3196,12 +3244,99 @@ function exportGuiaExcelById(orderId) {
 let returnPickupId = null;
 let returnPickupLines = [];
 let returnPickupSort = {col:'brand', dir:1};
+let _returnPickupLinesUnsub = null;
+let _returnPickupSavePromise = Promise.resolve();
 
-function emitReturnPickupGuide() {
+function returnPickupLineDocId(returnId, rid) {
+  return (returnId + '_' + rid).replace(/[^a-zA-Z0-9_\-]/g, '_');
+}
+
+async function saveReturnPickupLine(returnId, line, guideId) {
+  if (!window._db || !returnId || !line?.rid) return;
+  const data = {
+    returnId,
+    guideId: guideId || line.guideId || '',
+    rid: line.rid,
+    sku: line.sku,
+    qty: parseInt(line.qty)||0,
+    qtyCollected: parseInt(line.qtyCollected)||0,
+    diff: (parseInt(line.qtyCollected)||0) - (parseInt(line.qty)||0),
+    status: line.status || 'pending',
+    updatedAt: Date.now(),
+    updatedBy: currentUser ? currentUser.name : '—'
+  };
+  await window._db.collection('return_pickup_lines').doc(returnPickupLineDocId(returnId, line.rid)).set(data);
+}
+
+function queueReturnPickupLineSave(line) {
+  const returnId = returnPickupId;
+  const guideId = rets.find(d=>d.id===returnId)?.pickupGuide?.guideId || line.guideId || '';
+  _returnPickupSavePromise = _returnPickupSavePromise.then(() => saveReturnPickupLine(returnId, line, guideId)).catch(()=>{});
+  return _returnPickupSavePromise;
+}
+
+async function clearReturnPickupLineDocs(returnId) {
+  if (!window._db || !returnId) return;
+  const snap = await window._db.collection('return_pickup_lines').where('returnId','==',returnId).get();
+  for (let i = 0; i < snap.docs.length; i += 400) {
+    const batch = window._db.batch();
+    snap.docs.slice(i, i + 400).forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  }
+}
+
+async function ensureReturnPickupLineDocs(returnId, lines, guideId) {
+  if (!window._db || !returnId) return;
+  for (const line of (lines || [])) {
+    const ref = window._db.collection('return_pickup_lines').doc(returnPickupLineDocId(returnId, line.rid));
+    const snap = await ref.get();
+    if (!snap.exists) await saveReturnPickupLine(returnId, line, guideId);
+  }
+}
+
+function stopReturnPickupLinesListener() {
+  if (_returnPickupLinesUnsub) { _returnPickupLinesUnsub(); _returnPickupLinesUnsub = null; }
+}
+
+function startReturnPickupLinesListener(returnId) {
+  stopReturnPickupLinesListener();
+  if (!window._db || !returnId) return;
+  _returnPickupLinesUnsub = window._db.collection('return_pickup_lines')
+    .where('returnId','==',returnId)
+    .onSnapshot(snap => {
+      const guideId = rets.find(d=>d.id===returnId)?.pickupGuide?.guideId || '';
+      const lines = snap.docs.map(d => d.data()).filter(l => !guideId || !l.guideId || l.guideId === guideId);
+      if (!lines.length) return;
+      returnPickupLines = lines.map(l => ({
+        rid:l.rid, sku:l.sku, qty:parseInt(l.qty)||0,
+        qtyCollected:parseInt(l.qtyCollected)||0,
+        diff:parseInt(l.diff)||0, status:l.status||'pending',
+        updatedBy:l.updatedBy||'', updatedAt:l.updatedAt||0, guideId:l.guideId||''
+      }));
+      renderReturnPickupContent();
+    });
+}
+
+async function readReturnPickupLines(returnId) {
+  if (!window._db || !returnId) return returnPickupLines;
+  const snap = await window._db.collection('return_pickup_lines').where('returnId','==',returnId).get();
+  const guideId = rets.find(d=>d.id===returnId)?.pickupGuide?.guideId || '';
+  const lines = snap.docs.map(d => d.data()).filter(l => !guideId || !l.guideId || l.guideId === guideId);
+  return lines.length ? lines.map(l => ({
+    rid:l.rid, sku:l.sku, qty:parseInt(l.qty)||0,
+    qtyCollected:parseInt(l.qtyCollected)||0,
+    diff:parseInt(l.diff)||0, status:l.status||'pending',
+    updatedBy:l.updatedBy||'', updatedAt:l.updatedAt||0, guideId:l.guideId||''
+  })) : returnPickupLines;
+}
+
+async function emitReturnPickupGuide() {
   const doc = rets.find(d => d.id === activeRet);
   if (!doc || !doc.lines || !doc.lines.length) { toast('Sem linhas para recolher', 'err'); return; }
+  const guideId = 'rpg_' + Date.now() + '_' + Math.random().toString(36).slice(2);
   const lines = mergeOrderLinesForReturn([{lines: doc.lines}]).map(l => ({
     rid: 'rp_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+    guideId,
     sku: l.sku,
     qty: l.qty,
     qtyCollected: 0,
@@ -3209,6 +3344,7 @@ function emitReturnPickupGuide() {
     diff: 0
   }));
   doc.pickupGuide = {
+    guideId,
     lines,
     sourceOrderIds: doc.sourceOrderIds || [],
     emittedAt: new Date().toLocaleString('pt-PT'),
@@ -3217,6 +3353,10 @@ function emitReturnPickupGuide() {
   };
   doc.status = 'guia-recolha';
   logAction('Guia recolha devolucao emitida', doc.id+' · '+lines.length+' linhas');
+  try {
+    await clearReturnPickupLineDocs(doc.id);
+    await ensureReturnPickupLineDocs(doc.id, lines, guideId);
+  } catch(e) {}
   saveRet();
   renderDocs('return');
   renderReturnPickupGuides();
@@ -3227,7 +3367,7 @@ function emitReturnPickupGuide() {
 function renderReturnPickupGuides() {
   const el = document.getElementById('returnPickupGuidesList');
   if (!el) return;
-  const guias = rets.filter(d => d.pickupGuide && ['guia-recolha','em-recolha','recolha-parcial','open'].includes(d.status));
+  const guias = rets.filter(d => d.pickupGuide && !['done','partial'].includes(d.pickupGuide.status) && ['guia-recolha','em-recolha'].includes(d.status));
   if (!guias.length) {
     el.innerHTML = '<div class="empty"><div class="empty-icon">🚚</div>'+tr('misc_no_return_pickups')+'</div>';
     return;
@@ -3268,8 +3408,15 @@ function startReturnPickup(retId) {
   if (!doc.pickupGuide) { toast('Esta devolução ainda não tem guia de recolha', 'err'); return; }
   if (!doc.pickupGuide.lines || !doc.pickupGuide.lines.length) { toast('Guia de recolha sem linhas', 'err'); return; }
   returnPickupId = retId;
+  if (!doc.pickupGuide.guideId) {
+    doc.pickupGuide.guideId = 'rpg_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+    saveRet();
+  }
   returnPickupLines = JSON.parse(JSON.stringify(doc.pickupGuide.lines));
-  returnPickupLines.forEach((l,i)=>{ if(!l.rid) l.rid='rp_'+i+'_'+Date.now(); });
+  returnPickupLines.forEach((l,i)=>{ if(!l.rid) l.rid='rp_'+i+'_'+Date.now(); l.guideId = doc.pickupGuide.guideId; });
+  ensureReturnPickupLineDocs(retId, returnPickupLines, doc.pickupGuide.guideId).catch(()=>{});
+  startReturnPickupLinesListener(retId);
+  try{startPresence('returnpickup',retId);}catch(e){}
   if (!['done','partial'].includes(doc.pickupGuide.status)) {
     doc.status = 'em-recolha';
     doc.pickupGuide.status = 'in-progress';
@@ -3384,6 +3531,8 @@ function setReturnPickupCollected(rid,value){
   if(!line) return;
   line.qtyCollected = Math.max(0, parseInt(value)||0);
   line.diff = line.qtyCollected - (parseInt(line.qty)||0);
+  line.status = line.status || 'pending';
+  queueReturnPickupLineSave(line);
 }
 
 function confirmReturnPickupLineById(rid) {
@@ -3391,6 +3540,7 @@ function confirmReturnPickupLineById(rid) {
   if(!line) return;
   line.diff = line.qtyCollected - (parseInt(line.qty)||0);
   line.status = 'confirmed';
+  queueReturnPickupLineSave(line);
   renderReturnPickupLines();
 }
 
@@ -3398,12 +3548,15 @@ function confirmReturnPickupLine(idx) {
   const line = returnPickupLines[idx];
   if(!line) return;
   line.status = 'confirmed';
+  queueReturnPickupLineSave(line);
   renderReturnPickupLines();
 }
 
-function finalizeReturnPickup() {
+async function finalizeReturnPickup() {
   const doc = rets.find(d => d.id === returnPickupId);
   if (!doc) return;
+  await _returnPickupSavePromise;
+  returnPickupLines = await readReturnPickupLines(returnPickupId);
   const confirmed = returnPickupLines.filter(l => l.status === 'confirmed');
   const pending = returnPickupLines.filter(l => l.status !== 'confirmed');
   if (pending.length) {
@@ -3428,6 +3581,8 @@ function finalizeReturnPickup() {
   const putawayIssued = doc.lines.length ? issuePutawayGuideForReturn(doc, {navigate:false, skipWarnConfirm:true, source:'pickup'}) : false;
   saveRet();
   logAction('Recolha devolucao finalizada', doc.id+' · '+diffs.length+' diferenças'+(putawayIssued?' · guia stock in emitida':''));
+  stopReturnPickupLinesListener();
+  stopPresence();
   returnPickupId = null; returnPickupLines = [];
   document.getElementById('returnPickupListSection').style.display = '';
   document.getElementById('returnPickupContent').style.display = 'none';
@@ -3439,8 +3594,8 @@ function finalizeReturnPickup() {
 
 function cancelReturnPickup() {
   if (!returnPickupId) return;
-  const doc = rets.find(d => d.id === returnPickupId);
-  if (doc) { doc.status = 'guia-recolha'; doc.pickupGuide.status = 'pending'; saveRet(); }
+  stopReturnPickupLinesListener();
+  stopPresence();
   returnPickupId = null; returnPickupLines = [];
   document.getElementById('returnPickupListSection').style.display = '';
   document.getElementById('returnPickupContent').style.display = 'none';
@@ -3782,7 +3937,7 @@ function finalizePutaway() {
     if (l.noPos && (!l.position || l.position === '???')) l.position = triagePosition();
     const entry = l.stockId
       ? stock.find(s=>s.id===l.stockId)
-      : stock.find(s=>s.sku===l.sku && String(s.position||'').toUpperCase()===String(l.position||triagePosition()).toUpperCase());
+      : stock.find(s=>sameProductCode(s.sku, l.sku) && String(s.position||'').toUpperCase()===String(l.position||triagePosition()).toUpperCase());
     if (entry) {
       if (entry.initialTheoretical === undefined) entry.initialTheoretical = initialStockQty(entry);
       entry.qty = entry.qty + l.qtyDone;
@@ -4519,7 +4674,8 @@ async function createBackupPayload() {
     teorico,
     warehouseMap,
     orderLines: await readCollectionDocs('order_lines'),
-    returnLines: await readCollectionDocs('return_lines')
+    returnLines: await readCollectionDocs('return_lines'),
+    returnPickupLines: await readCollectionDocs('return_pickup_lines')
   };
 }
 
@@ -4675,11 +4831,11 @@ async function downloadCloudBackup(id) {
 
 async function writeLineCollection(col, lines) {
   await clearCollection(col);
-  const cleanLines = (lines || []).filter(l => l && l.docId && l.sku);
+  const cleanLines = (lines || []).filter(l => l && (col === 'return_pickup_lines' ? (l.returnId && l.rid) : (l.docId && l.sku)));
   for (let i = 0; i < cleanLines.length; i += 400) {
     const batch = window._db.batch();
     cleanLines.slice(i, i + 400).forEach(line => {
-      const id = line.id || lineDocId(line.docId, line.sku);
+      const id = line.id || (col === 'return_pickup_lines' ? returnPickupLineDocId(line.returnId, line.rid) : lineDocId(line.docId, line.sku));
       const data = {...line};
       delete data.id;
       batch.set(window._db.collection(col).doc(id), data);
@@ -4706,6 +4862,7 @@ async function restoreBackupPayload(backup, label) {
   const returnLines = backup.returnLines || (backup.rets || []).flatMap(d => (d.lines || []).map(l => ({docId:d.id, sku:l.sku, qty:l.qty, updatedAt:Date.now(), updatedBy:'restore'})));
   await writeLineCollection('order_lines', orderLines);
   await writeLineCollection('return_lines', returnLines);
+  await writeLineCollection('return_pickup_lines', backup.returnPickupLines || []);
   renderSkuDb(); renderStock(); renderDocs('order'); renderDocs('return');
   renderPickingGuides(); renderReturnPickupGuides(); renderPutawayGuides(); renderWarehouseMapForm(); updateTeoricoStatus();
   toast('Backup restaurado ✓ — ' + label, 'win');
@@ -4822,6 +4979,7 @@ async function resetPlatformData() {
     await saveWarehouseMap();
     await clearCollection('order_lines');
     await clearCollection('return_lines');
+    await clearCollection('return_pickup_lines');
     await clearCollection('presence');
     await clearCollection('audit');
     logAction('Reset total', 'Plataforma limpa');
@@ -4999,7 +5157,7 @@ function stopPresence() {
 }
 
 function renderPresenceBar(t, activeUsers) {
-  const barId = t === 'order' ? 'presence-order' : 'presence-return';
+  const barId = t === 'order' ? 'presence-order' : t === 'returnpickup' ? 'presence-returnpickup' : 'presence-return';
   const bar = document.getElementById(barId);
   if (!bar) return;
   if (!activeUsers.length) { bar.innerHTML = ''; return; }
@@ -5110,7 +5268,18 @@ function filterImportOrders() {
 }
 
 function importableReturnSourceOrders() {
-  return orders.filter(o => ['picked','parcial'].includes(o.status) && o.lines && o.lines.length > 0);
+  return orders.filter(o => ['picked','parcial'].includes(o.status) && returnableLinesForOrder(o).length > 0);
+}
+
+function returnableLinesForOrder(order) {
+  if (!order) return [];
+  if (order.guide?.lines?.length) {
+    const confirmed = order.guide.lines
+      .filter(l => l.status === 'confirmed')
+      .map(l => ({sku:l.sku, qty:parseInt(l.qtyDone)||parseInt(l.qty)||0}));
+    if (confirmed.length) return aggregateGuideLines(confirmed);
+  }
+  return aggregateGuideLines(order.lines || []);
 }
 
 function returnForSourceOrder(orderId) {
@@ -5171,8 +5340,9 @@ function renderImportOrderList(q) {
   }
 
   el.innerHTML = filtered.map(o => {
-    const total = o.lines.reduce((a,l) => a+l.qty, 0);
-    const skus = o.lines.length;
+    const returnableLines = returnableLinesForOrder(o);
+    const total = returnableLines.reduce((a,l) => a+l.qty, 0);
+    const skus = returnableLines.length;
     const safeId = escHtml(o.id);
     const active = _selectedImportOrderIds.has(o.id);
     const existingReturn = returnForSourceOrder(o.id);
@@ -5209,7 +5379,7 @@ function importOrderAsReturn(orderId) {
 
   // Show client modal pre-filled with same client
   _pendingDocType = 'return';
-  _pendingImportLines = order.lines.map(l => ({sku: l.sku, qty: l.qty}));
+  _pendingImportLines = returnableLinesForOrder(order);
   _pendingImportSourceOrderIds = [order.id];
 
   document.getElementById('clientModalTitle').textContent = '↩️ Devolução de pedido';
@@ -5224,7 +5394,7 @@ function importOrderAsReturn(orderId) {
   if (CLIENTS.includes(order.client)) {
     // Auto-select same client
     closeClientModal();
-    createReturnFromOrder(order.client, order.lines, [order.id]);
+    createReturnFromOrder(order.client, _pendingImportLines, [order.id]);
     return;
   }
 
@@ -5252,7 +5422,7 @@ function selectClientForImport(client) {
 
 function mergeOrderLinesForReturn(selected) {
   const map = {};
-  selected.forEach(o => (o.lines||[]).forEach(l => {
+  selected.forEach(o => returnableLinesForOrder(o).forEach(l => {
     const sku = resolveSku(l.sku);
     if(!sku) return;
     map[sku] = (map[sku] || 0) + (parseInt(l.qty)||0);
