@@ -1934,7 +1934,7 @@ function renderStock(){
     const rowWarn=disponivel<=0?'background:linear-gradient(90deg,rgba(254,226,226,.72),rgba(254,226,226,.2));':disponivel<3?'background:linear-gradient(90deg,rgba(254,243,199,.72),rgba(254,243,199,.2));':'';
     const dispCol='<td class="mono" style="'+dispClass+';padding:8px 10px;">'+disponivel+'</td>';
     const m=metrics[stockMetricKey(s)]||emptyStockMetric();
-    const cell = v => v>0?'<td class="mono" style="color:#1e40af">'+v+'</td>':'<td class="mono" style="color:var(--muted)">?</td>';
+    const cell = v => v>0?'<td class="mono" style="color:#1e40af">'+v+'</td>':'<td class="mono" style="color:var(--muted)">—</td>';
     const movCols=cell(m.carteira||0)+cell(m.emPrep||0)+cell(m.faturado||0)+cell(m.devPedidas||0)+cell(m.devPrep||0)+cell(m.devFeitas||0);
 
     const ti=stockCapacityQty(s);
