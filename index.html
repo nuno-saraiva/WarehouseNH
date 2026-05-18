@@ -724,7 +724,7 @@ select.input{appearance:auto;cursor:pointer;}
     </summary>
     <div class="card-body">
       <div class="g4">
-        <div class="field" style="margin:0"><label data-i="warehouse_map_shelves">Estantes</label><input class="input mono" id="wmShelves" type="number" min="1" max="26" value="11"></div>
+        <div class="field" style="margin:0"><label data-i="warehouse_map_shelves">Estantes</label><input class="input mono" id="wmShelves" type="number" min="1" max="702" value="11"></div>
         <div class="field" style="margin:0"><label data-i="warehouse_map_levels">Prateleiras</label><input class="input mono" id="wmLevels" type="number" min="1" max="9" value="5"></div>
         <div class="field" style="margin:0"><label data-i="warehouse_map_slots">Posições/prateleira</label><input class="input mono" id="wmSlots" type="number" min="1" max="9" value="4"></div>
         <button class="btn btn-dark" onclick="saveWarehouseMapFromForm()" data-i="btn_save">Guardar</button>
@@ -1893,7 +1893,7 @@ function renderStock(){
     if(va>vb) return  1*stockSort.dir;
     // secondary sort by position
     const pa=parsePos(a.position),pb2=parsePos(b.position);
-    if(pa.shelf!==pb2.shelf)return pa.shelf.localeCompare(pb2.shelf);
+    if(pa.shelf!==pb2.shelf)return compareShelfName(pa.shelf, pb2.shelf);
     if(pa.floor!==pb2.floor)return pa.floor-pb2.floor;
     return pa.slot-pb2.slot;
   });
@@ -2018,10 +2018,32 @@ function exportStockExcel(){
   const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Stock');
   XLSX.writeFile(wb,'stock_atual.xlsx');toast('Excel exportado','win');
 }
+function shelfNameFromIndex(index) {
+  let n = Math.max(0, parseInt(index) || 0) + 1;
+  let name = '';
+  while (n > 0) {
+    n--;
+    name = String.fromCharCode(65 + (n % 26)) + name;
+    n = Math.floor(n / 26);
+  }
+  return name;
+}
+function shelfIndexFromName(name) {
+  const s = String(name || '').trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(s)) return Number.POSITIVE_INFINITY;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) n = n * 26 + (s.charCodeAt(i) - 64);
+  return n - 1;
+}
+function compareShelfName(a, b) {
+  const ia = shelfIndexFromName(a), ib = shelfIndexFromName(b);
+  if (ia !== ib) return ia - ib;
+  return String(a || '').localeCompare(String(b || ''));
+}
 function warehouseShelves() {
   const custom = String(warehouseMap.customShelves||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
   if(custom.length) return custom;
-  return Array.from({length: Math.max(1, Math.min(26, parseInt(warehouseMap.shelves)||11))}, (_,i)=>String.fromCharCode(65+i));
+  return Array.from({length: Math.max(1, Math.min(702, parseInt(warehouseMap.shelves)||11))}, (_,i)=>shelfNameFromIndex(i));
 }
 function warehousePositions() {
   const levels = Math.max(1, Math.min(9, parseInt(warehouseMap.levels)||5));
@@ -2101,7 +2123,7 @@ function renderWarehouseMapForm() {
 }
 function saveWarehouseMapFromForm() {
   warehouseMap = {
-    shelves: Math.max(1, Math.min(26, parseInt(document.getElementById('wmShelves').value)||11)),
+    shelves: Math.max(1, Math.min(702, parseInt(document.getElementById('wmShelves').value)||11)),
     levels: Math.max(1, Math.min(9, parseInt(document.getElementById('wmLevels').value)||5)),
     slots: Math.max(1, Math.min(9, parseInt(document.getElementById('wmSlots').value)||4)),
     customShelves: document.getElementById('wmCustomShelves').value.trim()
@@ -2170,7 +2192,7 @@ function openStockMovement(action){
   const sel=document.getElementById('ent-pos-select');
   const positions=[...new Set([...warehousePositions(), ...stock.map(s=>s.position)])].sort((a,b)=>{
     const pa=parsePos(a),pb=parsePos(b);
-    if(pa.shelf!==pb.shelf)return pa.shelf.localeCompare(pb.shelf);
+    if(pa.shelf!==pb.shelf)return compareShelfName(pa.shelf, pb.shelf);
     if(pa.floor!==pb.floor)return pa.floor-pb.floor;
     return pa.slot-pb.slot;
   });
@@ -2321,7 +2343,7 @@ function refreshEntPositionsForSku(){
   }
   positions=positions.filter(Boolean).sort((a,b)=>{
     const pa=parsePos(a),pb=parsePos(b);
-    if(pa.shelf!==pb.shelf)return pa.shelf.localeCompare(pb.shelf);
+    if(pa.shelf!==pb.shelf)return compareShelfName(pa.shelf, pb.shelf);
     if(pa.floor!==pb.floor)return pa.floor-pb.floor;
     return pa.slot-pb.slot;
   });
@@ -3014,7 +3036,7 @@ function putawayBoxPriority(type) {
 }
 function compareWarehousePosition(a, b) {
   const pa = parsePos(a.position), pb = parsePos(b.position);
-  if (pa.shelf !== pb.shelf) return pa.shelf.localeCompare(pb.shelf);
+  if (pa.shelf !== pb.shelf) return compareShelfName(pa.shelf, pb.shelf);
   if (pa.floor !== pb.floor) return pa.floor - pb.floor;
   return pa.slot - pb.slot;
 }
